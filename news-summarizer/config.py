@@ -1,55 +1,83 @@
+"""Configuration for the news summarizer.
+
+Reads settings from environment variables (loaded from a local .env file)
+and exposes them through a single Config object via get_config().
+"""
+
 import os
-import time
-from openai import OpenAI
-from anthropic import Anthropic
-from typing import Optional, Dict, Any, Iterator
-from cohere import ClientV2
+from dataclasses import dataclass
+from functools import lru_cache
+
 from dotenv import load_dotenv
 
-
-# Load environment variables
 load_dotenv()
 
-# Initialize clients
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-cohere_client = ClientV2(api_key=os.getenv("COHERE_API_KEY"))             
-# anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+REQUIRED_KEYS = ("OPENAI_API_KEY", "COHERE_API_KEY", "NEWS_API_KEY")
 
 
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+@dataclass(frozen=True)
+class Config:
+    """Application settings. Attribute names are lowercase on purpose."""
 
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
-DAILY_BUDGET = float(os.getenv("DAILY_BUDGET", "5.00"))
+    openai_api_key: str
+    cohere_api_key: str
+    news_api_key: str
+    environment: str
+    max_retries: int
+    request_timeout: int
+    daily_budget: float
 
-# Default models
-OPENAI_MODEL = "gpt-4o-mini"
-COHERE_MODEL = "command-a-plus-05-2026"
-ANTHROPIC_MODEL = ""
 
-print("✅ Setup complete!")
+def _read_key(name: str) -> str:
+    """Return an env var, or "" if it is unset, empty, or still a placeholder."""
+    value = os.getenv(name, "").strip()
+    if value.startswith("<") and value.endswith(">"):
+        return ""
+    return value
 
-def validate_config():
-    """Check that all required API keys are available."""
 
-    missing_keys = []
+def _read_number(name: str, default, cast):
+    """Return an env var converted with `cast`, or raise a clear error."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a {cast.__name__}, got {raw!r}") from None
 
-    if not os.getenv("OPENAI_API_KEY"):
-        missing_keys.append("OPENAI_API_KEY")
 
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        missing_keys.append("ANTHROPIC_API_KEY")
+@lru_cache(maxsize=1)
+def get_config() -> Config:
+    """Build the Config once, validate it, and reuse it afterwards."""
+    missing = [name for name in REQUIRED_KEYS if not _read_key(name)]
+    if missing:
+        raise ValueError(
+            "Missing required configuration: " + ", ".join(missing)
+            + ". Set them in your .env file."
+        )
 
-    if not NEWS_API_KEY:
-        missing_keys.append("NEWS_API_KEY")
+    return Config(
+        openai_api_key=_read_key("OPENAI_API_KEY"),
+        cohere_api_key=_read_key("COHERE_API_KEY"),
+        news_api_key=_read_key("NEWS_API_KEY"),
+        environment=os.getenv("ENVIRONMENT", "development").strip(),
+        max_retries=_read_number("MAX_RETRIES", 3, int),
+        request_timeout=_read_number("REQUEST_TIMEOUT", 30, int),
+        daily_budget=_read_number("DAILY_BUDGET", 5.00, float),
+    )
 
-    if missing_keys:
-        print("Missing API keys:", ", ".join(missing_keys))
-        return False
-
-    print("Configuration validated successfully!")
-    return True
 
 if __name__ == "__main__":
-    validate_config()
+    try:
+        config = get_config()
+    except ValueError as error:
+        print(f"❌ {error}")
+        raise SystemExit(1)
+
+    print("✅ Configuration is valid")
+    print(f"   environment:     {config.environment}")
+    print(f"   max_retries:     {config.max_retries}")
+    print(f"   request_timeout: {config.request_timeout}s")
+    print(f"   daily_budget:    ${config.daily_budget:.2f}")
+    print("   API keys:        OpenAI, Cohere, News API all set")
